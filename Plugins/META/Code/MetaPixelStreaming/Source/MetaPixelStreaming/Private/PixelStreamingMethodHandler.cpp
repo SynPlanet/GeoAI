@@ -308,7 +308,8 @@ FJsonRpcResponse UPixelStreamingMethodHandler::OnGeoPinsReceived(const FPixelStr
                 NewPin.GeoPositions = FVector((*Coordinates)[1]->AsNumber(), (*Coordinates)[0]->AsNumber(), 0.0);
                 NewPin.WorldPositions = CesiumGeoreference->TransformLongitudeLatitudeHeightPositionToUnreal(NewPin.GeoPositions);
                 NewPin.WorldPositions.Z = 500.0;
-
+                NewPin.Id = PinId;
+                
                 NewMessage.PinsInfo.Add(MoveTemp(NewPin));
         }
 

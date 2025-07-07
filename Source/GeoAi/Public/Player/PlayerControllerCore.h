@@ -21,6 +21,6 @@ public:
         UPROPERTY()
         TObjectPtr<UPixelStreamingInput> PixelStreamingInput{};
 
-        UFUNCTION()
+        UFUNCTION(BlueprintCallable)
         void PassPixelStreamingMessageToClient(const FString& Descriptor);
 };
