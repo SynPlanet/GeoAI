@@ -1,0 +1,400 @@
+// Copyright Epic Games, Inc. All Rights Reserved.
+
+#include "/Engine/Private/Common.ush"
+#include "/Engine/Private/ColorUtils.ush"
+#include "/Engine/Private/DistanceField/GlobalDistanceFieldShared.ush"
+#include "/Engine/Generated/GeneratedUniformBuffers.ush"
+#include "/Engine/Private/Random.ush"
+#include "/Engine/Private/SceneTexturesCommon.ush"
+#include "/Engine/Private/SceneData.ush"
+#include "/Engine/Private/ScreenPass.ush"
+#include "/Engine/Private/SceneTextureParameters.ush"
+#include "/Engine/Private/TonemapCommon.ush"
+#include "/Engine/Private/ColorSpace.ush"
+
+#include "/MetaShaders/MetaColorCorrectRegionsCommon.usf"
+//////////////////////////////////////////////////////////////////////////
+
+#define SHAPE_TYPE_LINE 0
+#define SHAPE_TYPE_SURFACE 1
+#define CLIP_PIXELS_OUTSIDE_AABB 0
+#define EXCLUDE_STENCIL 0
+
+Texture2D<uint> MergedStencilTexture;
+StructuredBuffer<float4> VertexBuffer;
+StructuredBuffer<uint> IndexBuffer;
+ByteAddressBuffer ObjectBuffer;
+StructuredBuffer<uint2> ReferenceBuffer;
+StructuredBuffer<uint2> GridBuffer;
+StructuredBuffer<uint> SelectionBuffer;
+float2 GridBoundsMin;
+int GridResolutionX;
+int GridResolutionY;
+float GridCellSize;
+uint SelectionCount;
+
+bool CheckIfTriangleContainsPoint(float2 a, float2 b, float2 c, float2 s)
+{
+  float as_x = s.x - a.x;
+  float as_y = s.y - a.y;
+  bool s_ab = (b.x - a.x) * as_y - (b.y - a.y) * as_x > 0.0;
+
+  if ((c.x - a.x) * as_y - (c.y - a.y) * as_x > 0 == s_ab)
+  {
+    return false;
+  }
+  if ((c.x - b.x) * (s.y - b.y) - (c.y - b.y)*(s.x - b.x) > 0.0 != s_ab)
+  {
+    return false;
+  }
+  return true;
+}
+
+bool CheckIfLineContains(float3 Vertex0, float3 Vertex1, float2 Point, float Radius, float Dash)
+{
+  float2 Direction = Vertex1.xy - Vertex0.xy;
+  float Length = length(Direction);
+  if (Length > 0.0)
+  {
+    Direction /= Length;
+  }
+    
+  float t = clamp(dot(Point - Vertex0.xy, Direction), 0.0, Length);
+  float2 Delta = Vertex0.xy + Direction * t - Point;
+  float DistancePow2 = dot(Delta, Delta);
+
+  if(DistancePow2 > Radius * Radius)
+  {
+    return false;
+  }
+  if(Dash <= 0.0)
+  {
+    return true;
+  }
+  if (Length > 0.0)
+  {
+    t /= Length;
+  }  
+  
+  t = lerp(Vertex0.z, Vertex1.z, t);
+  return frac(t / (2.0 * Dash)) < 0.5;
+}
+
+MaterialFloat4 UnpackColor(uint PackedColor)
+{
+  static const MaterialFloat INV_255 = 1.0 / 255.0;
+  MaterialFloat4 Color;
+  Color.a = MaterialFloat((PackedColor & 0xFF000000u) >> 24) * INV_255;
+  Color.r = MaterialFloat((PackedColor & 0x00FF0000u) >> 16) * INV_255;
+  Color.g = MaterialFloat((PackedColor & 0x0000FF00u) >> 8) * INV_255;
+  Color.b = MaterialFloat((PackedColor & 0x000000FFu) >> 0) * INV_255;
+  return Color;
+}
+
+float4 MixColorsFrontToBack(float4 AccumulatedColor, float4 LayerColor)
+{
+        return
+            AccumulatedColor + 
+            float4(LayerColor.xyz * LayerColor.w, LayerColor.w) * (1.0 - AccumulatedColor.w);
+}
+
+float4 BlendBackToFront(float4 AccumulatedColor, float4 LayerColor)
+{
+  return AccumulatedColor * (1.0 - LayerColor.w) + float4(LayerColor.xyz * LayerColor.w, LayerColor.w);
+}
+
+MaterialFloat4 HighlightColor(MaterialFloat4 Color)
+{
+  Color.xyz = LinearRGB_2_HSV(Color.xyz);
+  Color.y *= 0.75;
+  Color.z = pow(saturate(Color.z + 0.1), 0.75);
+  Color.xyz = HSV_2_LinearRGB(Color.xyz);
+  Color.w = saturate(Color.w * 1.5);
+  return Color;
+}
+
+MaterialFloat4 CastOnPolygons(MaterialFloat2 CastPosition, float ScaleFactor, out float OutContrastAlpha)
+{
+  OutContrastAlpha = 0.0;
+
+  if (
+    CastPosition.x < MetaSurfaceData.RectMin.x || CastPosition.x > MetaSurfaceData.RectMax.x || 
+    CastPosition.y < MetaSurfaceData.RectMin.y || CastPosition.y > MetaSurfaceData.RectMax.y) 
+  {
+    return MaterialFloat4(0.0, 0.0, 0.0, 0.0);
+  }
+
+  int2 Index = (CastPosition - GridBoundsMin) / GridCellSize;
+  if(Index.x < 0 || Index.x >= GridResolutionX || Index.y < 0 || Index.y >= GridResolutionY)
+  {
+    return MaterialFloat4(0.0, 0.0, 0.0, 0.0);
+  }
+
+  static const int MAX_COLORS_COUNT = 6;
+  MaterialFloat4 ColorsStorage[MAX_COLORS_COUNT];
+  int ColorsCount = 0;
+  bool AnythingSelected = false;
+  uint2 GridCell = GridBuffer[Index.x + Index.y * GridResolutionX];
+  
+  for (uint i = 0; i < GridCell.y; ++i) 
+  {
+    uint2 Reference = ReferenceBuffer[GridCell.x + i];
+    uint4 ObjectPart1 = ObjectBuffer.Load4(Reference.x * 24 + 0);
+    uint2 ObjectPart2 = ObjectBuffer.Load2(Reference.x * 24 + 16);
+
+    bool IsSelected = false;
+    for( uint i = 0; i < SelectionCount; ++i)
+    {
+      if(ObjectPart1.x == SelectionBuffer[i])
+      {
+        IsSelected = true;
+        break;
+      }
+    }
+
+    float3 Vertex0 = VertexBuffer[IndexBuffer[Reference.y + 0]].xyz;
+    float3 Vertex1 = VertexBuffer[IndexBuffer[Reference.y + 1]].xyz;
+    bool Outline;
+
+    if(ObjectPart2.y == 1 || ObjectPart2.y == 2 || ObjectPart2.y == 4)
+    {
+      if(ObjectPart2.y == 4 && !IsSelected)
+      {
+        continue;
+      }
+
+      float Radius = asfloat(ObjectPart2.y == 2 ? ObjectPart1.z : ObjectPart2.x);
+      if(ObjectPart2.y == 1 || ObjectPart2.y == 4){
+        Radius *= ScaleFactor;
+      }
+      float Dash = asfloat(ObjectPart1.w);
+      
+      if(!CheckIfLineContains(Vertex0, Vertex1, CastPosition, Radius, Dash))
+      {
+        continue;
+      }
+
+      Outline = ObjectPart2.y == 4;
+    }
+    else
+    {
+      float2 Vertex2 = VertexBuffer[IndexBuffer[Reference.y + 2]].xy;
+      if(!CheckIfTriangleContainsPoint(Vertex0.xy, Vertex1.xy, Vertex2, CastPosition))
+      {
+        continue;
+      }
+
+      Outline = false;
+    }
+    
+    if(IsSelected && !AnythingSelected)
+    {
+      AnythingSelected = true;
+      ColorsCount = 0;
+    }
+    if(AnythingSelected && !IsSelected)
+    {
+      continue;
+    }
+      
+    MaterialFloat4 Color = UnpackColor(ObjectPart1.y);
+    if(IsSelected && !Outline)
+    {
+      Color = HighlightColor(Color);
+    }
+    
+    int FoundIndex = MAX_COLORS_COUNT;
+    int WorstIndex = 0;
+    for(int j = 0; j < ColorsCount; ++j)
+    {
+      float3 Delta = ColorsStorage[j].xyz - Color.xyz;
+      if(dot(Delta, Delta) < (0.1 * 0.1))
+      {
+        FoundIndex = j;
+        break;
+      }
+      if(ColorsStorage[j].w < ColorsStorage[WorstIndex].w)
+      {
+        WorstIndex = j;
+      }
+    }
+    if(FoundIndex >= MAX_COLORS_COUNT)
+    {
+      if(ColorsCount >= MAX_COLORS_COUNT)
+      {
+        if(IsSelected && Color.w > ColorsStorage[WorstIndex].w)
+        {
+          ColorsStorage[WorstIndex] = Color;
+        }
+      }
+      else
+      {
+        ColorsStorage[ColorsCount++] = Color;
+      }
+    }
+    else
+    {
+      ColorsStorage[FoundIndex].w = max(ColorsStorage[FoundIndex].w, Color.w);
+    }
+  }
+  
+  float Priorities[MAX_COLORS_COUNT];
+  for(uint i = 0; i < ColorsCount; ++i)
+  {
+    Priorities[i] = LinearRGB_2_HSV(ColorsStorage[i].xyz).y * ColorsStorage[i].w;
+  }
+  
+  for(uint i = 1; i < ColorsCount; ++i)
+  {
+    for(uint j = 0; j + i < ColorsCount; ++j)
+    {
+      if(Priorities[j] <= Priorities[j + 1])
+      {
+        continue;
+      }
+
+      {
+        float t = Priorities[j];
+        Priorities[j] = Priorities[j + 1];
+        Priorities[j + 1] = t;
+      }
+
+      {
+        float4 t = ColorsStorage[j];
+        ColorsStorage[j] = ColorsStorage[j + 1];
+        ColorsStorage[j + 1] = t;
+      }
+    }
+  }
+  
+  MaterialFloat4 SumColor = MaterialFloat4(0.0, 0.0, 0.0, 0.0);
+  float MaxAlpha = 0.0;
+  for(int i = 0; i < ColorsCount; ++i)
+  {
+    MaterialFloat4 Color = ColorsStorage[i];
+    SumColor = BlendBackToFront(SumColor, Color);
+    MaxAlpha = max(MaxAlpha, Color.w);
+  }
+  
+//  SumColor.w = MaxAlpha; // disscussible
+  float Brightness = dot(SumColor.xyz, float3(0.2126, 0.7152, 0.0722));
+  OutContrastAlpha = pow(Brightness* SumColor.w, 1.0 / 2.0); // 1.0 / 16.0 is quite good, but some colors blend with environment completely
+  
+  return SumColor;
+}
+
+MaterialFloat4 CalcPixelMaterialInputs(in FMaterialPixelParameters Parameters)
+{
+  MaterialFloat4 SceneColor = SceneTextureLookup(GetDefaultSceneTextureUV(Parameters, PPI_PostProcessInput0), PPI_PostProcessInput0, false);
+
+#if STENCIL_ENABLED
+  {
+    int CustomStencil = MergedStencilTexture.Load(int3(Parameters.SvPosition.xy, 0.)).r;
+    if (MetaRegionData.ExcludeStencil == EXCLUDE_STENCIL)
+    {
+      if (CustomStencil > 0)
+        return SceneColor;
+    }
+    else
+    {
+      if (CustomStencil == 0)
+        return SceneColor;
+    }
+  }
+#endif
+
+  float2 LocalPosition = RotateTranslateScale(
+    GetWorldPosition(Parameters),
+    MetaRegionData.Translate.xyz, 
+    MetaRegionData.Rotate,
+    MetaRegionData.Scale).xy;
+    
+  float ContrastAlpha = 0.0;
+  MaterialFloat4 RegionsColor = CastOnPolygons(LocalPosition, Parameters.SvPosition.w, ContrastAlpha);
+
+#if 0  // uncomment to show tile real boundaries, better to have one tile on the map
+  struct Util
+  {
+    float RectSDF(float2 p, float2 center, float2 wh)
+    {
+      float2 d = abs(p - center) - wh;
+      return length(max(d, 0.0)) + min(max(d.x, d.y), 0.0);
+    }
+  };
+  static const MaterialFloat3 COLORS[6] = {
+    MaterialFloat3(1.0, 0.0, 0.0), 
+    MaterialFloat3(0.0, 1.0, 0.0), 
+    MaterialFloat3(0.0, 0.0, 1.0), 
+    MaterialFloat3(1.0, 1.0, 0.0), 
+    MaterialFloat3(0.0, 1.0, 1.0), 
+    MaterialFloat3(1.0, 0.0, 1.0) };
+  Util U;
+  float2 FixedMin = MetaSurfaceData.RectMin + (MetaSurfaceData.RectMax - MetaSurfaceData.RectMin) * 0.25;
+  float2 FixedMax = MetaSurfaceData.RectMax - (MetaSurfaceData.RectMax - MetaSurfaceData.RectMin) * 0.25;
+  float Sdf = U.RectSDF(LocalPosition, (FixedMax + FixedMin) * 0.5, (FixedMax - FixedMin));
+  float Alpha = saturate(abs(Sdf) / (FixedMax.x - FixedMin.x));
+  RegionsColor = MixColorsFrontToBack(RegionsColor, MaterialFloat4(COLORS[4] * Alpha, Sdf <= 0.0 ? 0.5 : 0.05));
+#endif
+
+  float4 FinalColor = MixColorsFrontToBack(RegionsColor, SceneColor);
+  FinalColor.xyz = saturate(pow(FinalColor.xyz, float(1.0 + MetaSurfaceData.ColorOpacity * ContrastAlpha).xxx)); // * (1.0 + 1.0 * RegionsColor.w));
+  return FinalColor;
+}
+
+struct FPostProcessMaterialVSToPS
+{
+	float4 Position : SV_POSITION;
+};
+
+#if (FEATURE_LEVEL > FEATURE_LEVEL_ES3_1)
+void MainVS(
+	in float4 InPosition : ATTRIBUTE0,
+	out FPostProcessMaterialVSToPS Output
+)
+{
+	Output = (FPostProcessMaterialVSToPS)0;
+	DrawRectangle(InPosition, Output.Position);
+}
+
+void BuildParameters(in FPostProcessMaterialVSToPS Input, inout FMaterialPixelParameters Parameters)
+{
+	Parameters = (FMaterialPixelParameters)0;
+
+	ResolvedView = ResolveView();
+
+	float4 SvPosition = Input.Position;
+	float2 ViewportUV = (SvPosition.xy - PostProcessOutput_ViewportMin.xy) * PostProcessOutput_ViewportSizeInverse.xy;
+
+	SvPosition.z = LookupDeviceZ(ViewportUVToBufferUV(ViewportUV));
+	SvPosition.z = max(SvPosition.z, 1e-18);
+
+	float4 ScreenPosition = SvPositionToScreenPosition(SvPosition);
+	float3 TranslatedWorldPosition = SvPositionToTranslatedWorld(SvPosition);
+  
+
+	// Remove the pre view translation
+	Parameters.WorldPosition_CamRelative = TranslatedWorldPosition.xyz;
+	Parameters.AbsoluteWorldPosition = TranslatedWorldPosition.xyz - LWCHackToFloat(ResolvedView.PreViewTranslation).xyz;
+
+  // compute scale factor
+  float FocalX = 1.0 / tan(ResolvedView.FieldOfViewWideAngles.x * 0.5);
+  float WFactor = mul(float4(TranslatedWorldPosition, 1.0), ResolvedView.TranslatedWorldToClip).w;
+  SvPosition.w = WFactor * 2.0 / (FocalX * ResolvedView.ViewSizeAndInvSize.x);
+
+	Parameters.SvPosition = SvPosition;
+	Parameters.ScreenPosition = ScreenPosition;
+
+	Parameters.CameraVector = normalize(-Parameters.WorldPosition_CamRelative.xyz);
+}
+
+void MainPS(
+	in FPostProcessMaterialVSToPS Input,
+	out float4 OutColor : SV_Target0
+)
+{
+	FMaterialPixelParameters Parameters;
+	BuildParameters(Input, Parameters);
+	OutColor = CalcPixelMaterialInputs(Parameters);
+}
+
+#endif

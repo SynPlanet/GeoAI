@@ -1,0 +1,31 @@
+{
+	"FileVersion" : 3,
+	"Version" : 6,
+	"VersionName" : "2.3",
+	"FriendlyName" : "Geographical Math",
+	"Description" : "",
+	"Category" : "",
+	"CreatedBy" : "Artemy Astakhov",
+	"CreatedByURL" : "",
+	"DocsURL" : "",
+	"MarketplaceURL" : "",
+	"SupportURL" : "",
+	"EnabledByDefault" : true,
+	"CanContainContent" : false,
+	"IsBetaVersion" : false,
+	"Installed" : false,
+	"Modules" :
+	[
+		{
+			"Name" : "GeographicalMath",
+			"Type" : "Runtime",
+			"LoadingPhase" : "Default"
+		}
+	],
+	"Plugins": [
+		{
+			"Name": "GeoReferencing",
+			"Enabled": true
+		}
+	]
+}
