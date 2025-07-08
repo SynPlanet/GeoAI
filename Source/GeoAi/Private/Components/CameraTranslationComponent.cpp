@@ -47,6 +47,7 @@ void UCameraTranslationComponent::TickComponent(float DeltaTime, ELevelTick Tick
         if (TrySendNotifications())
         {
                 SetComponentTickEnabled(false);
+                TargetPawn->EnableInput(PC);
         }
 }
 
