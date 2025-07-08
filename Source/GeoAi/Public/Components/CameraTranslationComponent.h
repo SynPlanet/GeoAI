@@ -32,13 +32,6 @@ public:
         UFUNCTION(BlueprintCallable)
         void SetTargetTransform(const FTransform& NewTargetTransform);
 
-        /** Update offset data for interaction with the frontend
-        * @param NewTargetPosition world coordinates in WGS84 format
-        * @param NewTranslationId request identifier
-        */
-        UFUNCTION(BlueprintCallable)
-        void UpdateRequestInfo(const FGeographicalLocation& NewTargetPosition, const FGuid& NewTranslationId);
-
 protected:
         /** Global function called every UEapp frame*/
         virtual void TickComponent(float DeltaTime, ELevelTick TickType, FActorComponentTickFunction* ThisTickFunction) override;

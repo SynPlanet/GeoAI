@@ -1,7 +1,6 @@
 #include "Components/CameraTranslationComponent.h"
 
 #include "CesiumGeoreference.h"
-#include "GeographicalContext.h"
 #include "System/GeoAiUtilitiesLibrary.h"
 
 DEFINE_LOG_CATEGORY_STATIC(LogCameraTranslationComponent, Log, All);
@@ -119,15 +118,6 @@ void UCameraTranslationComponent::SetTargetTransform(const FTransform& NewTarget
         TargetTransform = NewTargetTransform;
 
         TryEnableCameraTranslation();
-}
-
-void UCameraTranslationComponent::UpdateRequestInfo(const FGeographicalLocation& NewTargetPosition, const FGuid& NewTranslationId)
-{
-        TargetGeoPosition = NewTargetPosition;
-
-        CurrentTranslationId = NewTranslationId;
-
-        // TODO: Here we can send notification abort previous translation
 }
 
 void UCameraTranslationComponent::SendNotification(const bool bIsUpClose) const
