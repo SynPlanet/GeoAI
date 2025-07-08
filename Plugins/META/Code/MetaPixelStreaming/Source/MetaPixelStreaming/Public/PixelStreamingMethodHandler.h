@@ -174,6 +174,9 @@ public:
         UFUNCTION(BlueprintCallable, BlueprintPure = false, Category = "PixelStreaming|MethodHandler|Dispatchers")
         static FJsonRpcResponse OnGeoPinsReceived(const FPixelStreamingMethodContext& Ctx);
 
+        UFUNCTION(BlueprintCallable, BlueprintPure = false, Category = "PixelStreaming|MethodHandler|Dispatchers")
+        static FJsonRpcResponse OnTranslateCameraLocationReceived(const FPixelStreamingMethodContext& Ctx);
+
         friend class FPixelStreamingMethodHandlerRegularTests;
         friend class FPixelStreamingMethodHandlerDegenerateTests;
 };

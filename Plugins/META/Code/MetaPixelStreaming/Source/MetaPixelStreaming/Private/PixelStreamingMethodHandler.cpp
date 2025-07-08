@@ -6,6 +6,7 @@
 #include "PixelStreamingClient.h"
 #include "PixelStreamingMethod.h"
 #include "PixelStreamingMethodContext.h"
+#include "Components/CameraTranslationComponent.h"
 #include "GameFramework/GameplayMessageSubsystem.h"
 #include "GameFramework/GameplayMessageTags.h"
 #include "System/GeoAiUtilitiesLibrary.h"
@@ -136,6 +137,8 @@ void UPixelStreamingMethodHandler::RegisterDefaultDispatchers()
         META_REGISTER_DISPATCHER(OnBackToOrigin);
         META_REGISTER_DISPATCHER(OnScanResponseReceived);
         META_REGISTER_DISPATCHER(OnGeoPinsReceived);
+        META_REGISTER_DISPATCHER(OnTranslateCameraLocationReceived);
+
 #undef META_REGISTER_DISPATCHER
 }
 
@@ -311,8 +314,8 @@ FJsonRpcResponse UPixelStreamingMethodHandler::OnGeoPinsReceived(const FPixelStr
                 const TArray<TSharedPtr<FJsonValue>>* Coordinates{};
                 if (!Object->TryGetArrayField(TEXT("coordinates"), Coordinates))
                 {
-                       CreateSimpleJsonResponse(Guid, EJsonRpcErrorCode::InvalidParams, "OnGeoPinsReceived: Invalid `coordinates` parameter.");
-                       continue;
+                        CreateSimpleJsonResponse(Guid, EJsonRpcErrorCode::InvalidParams, "OnGeoPinsReceived: Invalid `coordinates` parameter.");
+                        continue;
                 }
 
                 FString PinId;
@@ -338,6 +341,73 @@ FJsonRpcResponse UPixelStreamingMethodHandler::OnGeoPinsReceived(const FPixelStr
         NewMessage.InstigatingController = Caller;
 
         Caller->GetGameInstance()->GetSubsystem<UGameplayMessageSubsystem>()->BroadcastMessage(GameplayTagsRouter::OnGeoPinsReceived, MoveTemp(NewMessage));
+
+        return CreateSimpleJsonResponse(Guid, EJsonRpcErrorCode::None, FString());
+}
+
+FJsonRpcResponse UPixelStreamingMethodHandler::OnTranslateCameraLocationReceived(const FPixelStreamingMethodContext& Ctx)
+{
+        verify(IsAvailable());
+
+        const auto Guid = Ctx.Request.GetGuid();
+        const TObjectPtr<APlayerController> Caller = Ctx.Caller;
+
+        if (!IsValid(Ctx.Caller))
+        {
+                return CreateSimpleJsonResponse(Guid, EJsonRpcErrorCode::InvalidRequest, TEXT("Caller doesn't existed!"));
+        }
+
+        const FJsonObject Params = Ctx.Request.GetParams();
+
+        const ACesiumGeoreference* const CesiumGeoreference = UGeoAiUtilitiesLibrary::GetCesiumGeoreference(Caller);
+        check(CesiumGeoreference);
+
+        const TArray<TSharedPtr<FJsonValue>>* Coordinates{};
+        if (!Params.TryGetArrayField(TEXT("coordinates"), Coordinates))
+        {
+                return CreateSimpleJsonResponse(Guid, EJsonRpcErrorCode::InvalidParams, "Invalid `coordinates` parameter.");
+        }
+
+        const TArray<TSharedPtr<FJsonValue>>* Rotate{};
+        Params.TryGetArrayField(TEXT("rotate"), Rotate);
+
+        const FVector ResultGeoLocation = FVector((*Coordinates)[1]->AsNumber(), (*Coordinates)[0]->AsNumber(), 0.0);
+        const FVector ResultWorldLocation = CesiumGeoreference->TransformLongitudeLatitudeHeightPositionToUnreal(ResultGeoLocation);
+
+        if (auto* TranslationComponent = Caller->FindComponentByClass<UCameraTranslationComponent>(); IsValid(TranslationComponent))
+        {
+                if (Rotate->IsEmpty())
+                {
+                        TranslationComponent->SetTargetLocation(ResultGeoLocation);
+                }
+                else
+                {
+                        const FRotator ResultingRotation = FRotator((*Rotate)[0]->AsNumber(), (*Rotate)[1]->AsNumber(), 0.0);
+                        TranslationComponent->SetTargetTransform(FTransform(FQuat(ResultingRotation), ResultWorldLocation));
+                }
+        }
+        else
+        {
+                TranslationComponent = StaticCast<UCameraTranslationComponent*>(
+                        Caller->AddComponentByClass(UCameraTranslationComponent::StaticClass(), false, FTransform::Identity, true));
+
+                if (!IsValid(TranslationComponent))
+                {
+                        return CreateSimpleJsonResponse(Guid, EJsonRpcErrorCode::InternalError, TEXT("Translation component can't be create"));
+                }
+
+                if (Rotate->IsEmpty())
+                {
+                        TranslationComponent->SetTargetLocation(ResultGeoLocation);
+                }
+                else
+                {
+                        const FRotator ResultingRotation = FRotator((*Rotate)[0]->AsNumber(), (*Rotate)[1]->AsNumber(), 0.0);
+                        TranslationComponent->SetTargetTransform(FTransform(FQuat(ResultingRotation), ResultWorldLocation));
+                }
+
+                Caller->FinishAddComponent(TranslationComponent, false, FTransform::Identity);
+        }
 
         return CreateSimpleJsonResponse(Guid, EJsonRpcErrorCode::None, FString());
 }

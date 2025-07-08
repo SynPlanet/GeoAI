@@ -1,7 +1,6 @@
 #pragma once
 
 #include "CoreMinimal.h"
-#include "GeographicalLocation.h"
 #include "Components/ActorComponent.h"
 #include "CameraTranslationComponent.generated.h"
 
@@ -69,9 +68,6 @@ protected:
 private:
         /** The identifier of the current movement operation for interaction with the frontend*/
         FGuid CurrentTranslationId{};
-
-        /** Should be in WGS84*/
-        FGeographicalLocation TargetGeoPosition{};
 
         /** Calculated value based on those specified in .ini. Used for distance calculations.*/
         double CalculatedDistanceTriggerSqr = 0.2;

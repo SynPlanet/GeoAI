@@ -22,6 +22,7 @@ struct FPixelStreamingMethod
         META_BIND_METHOD(OnBackToOrigin, onBackToOrigin);
         META_BIND_METHOD(OnScanResponseReceived, onScanResponseReceived);
         META_BIND_METHOD(OnGeoPinsReceived, onGeoPinsReceived);
-
+        META_BIND_METHOD(OnTranslateCameraLocationReceived, onTranslateCameraLocationReceived);
+        
 #undef META_BIND_METHOD
 };
