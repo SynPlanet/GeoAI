@@ -1,6 +1,5 @@
 #pragma once
 
-#include "JsonRpcRequest.h"
 #include "JsonRpcResponse.h"
 #include "PixelStreamingMethodContext.h"
 
@@ -128,6 +127,8 @@ public:
         UFUNCTION(BlueprintCallable, BlueprintPure = false, Category = "PixelStreaming|MethodHandler")
         FJsonRpcResponse HandleRequest(const FPixelStreamingMethodContext& Ctx);
 
+        static FJsonRpcResponse CreateSimpleJsonResponse(FGuid RequestGuid, const EJsonRpcErrorCode& ErrorCode, const FString& Message);
+
         UFUNCTION(BlueprintCallable, BlueprintPure = false, Category = "PixelStreaming|MethodHandler|Instigators")
         static void SendTimerPolygonCoordinates(APlayerController* Instigator, UPARAM(ref) const FVector& Checkpoint, const float Radius);
 
@@ -172,6 +173,9 @@ public:
 
         UFUNCTION(BlueprintCallable, BlueprintPure = false, Category = "PixelStreaming|MethodHandler|Dispatchers")
         static FJsonRpcResponse OnGeoPinsReceived(const FPixelStreamingMethodContext& Ctx);
+
+        UFUNCTION(BlueprintCallable, BlueprintPure = false, Category = "PixelStreaming|MethodHandler|Dispatchers")
+        static FJsonRpcResponse OnTranslateCameraLocationReceived(const FPixelStreamingMethodContext& Ctx);
 
         friend class FPixelStreamingMethodHandlerRegularTests;
         friend class FPixelStreamingMethodHandlerDegenerateTests;

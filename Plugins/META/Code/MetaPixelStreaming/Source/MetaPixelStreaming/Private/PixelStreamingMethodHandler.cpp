@@ -6,9 +6,9 @@
 #include "PixelStreamingClient.h"
 #include "PixelStreamingMethod.h"
 #include "PixelStreamingMethodContext.h"
+#include "Components/CameraTranslationComponent.h"
 #include "GameFramework/GameplayMessageSubsystem.h"
 #include "GameFramework/GameplayMessageTags.h"
-#include "Kismet/GameplayStatics.h"
 #include "System/GeoAiUtilitiesLibrary.h"
 
 DEFINE_LOG_CATEGORY(LogPixelStreamingMethodHandler);
@@ -26,6 +26,27 @@ UGameInstance* UPixelStreamingMethodHandler::GetGameInstance() const noexcept
 UWorld* UPixelStreamingMethodHandler::GetWorld() const
 {
         return !IsValid(GameInstance) ? nullptr : GameInstance->GetWorld();
+}
+
+FJsonRpcResponse UPixelStreamingMethodHandler::CreateSimpleJsonResponse(FGuid RequestGuid, const EJsonRpcErrorCode& ErrorCode, const FString& Message)
+{
+        TSharedRef<FJsonObject> ResponseObject = MakeShared<FJsonObject>();
+        FJsonRpcError JsonRpcError;
+
+        const bool bHaveError = !Message.IsEmpty();
+
+        if (bHaveError)
+        {
+                JsonRpcError.SetCode(StaticCast<int32>(ErrorCode));
+                JsonRpcError.SetMessage(Message);
+        }
+
+        FJsonObjectWrapper Result;
+
+        ResponseObject->SetBoolField(TEXT("success"), !bHaveError);
+        Result.JsonObject = ResponseObject;
+
+        return UJsonRpcLibrary::MakeJsonRpcResponse(RequestGuid, Result, JsonRpcError);
 }
 
 void UPixelStreamingMethodHandler::SendTimerPolygonCoordinates(APlayerController* Instigator, UPARAM(ref) const FVector& Checkpoint, const float Radius)
@@ -116,6 +137,8 @@ void UPixelStreamingMethodHandler::RegisterDefaultDispatchers()
         META_REGISTER_DISPATCHER(OnBackToOrigin);
         META_REGISTER_DISPATCHER(OnScanResponseReceived);
         META_REGISTER_DISPATCHER(OnGeoPinsReceived);
+        META_REGISTER_DISPATCHER(OnTranslateCameraLocationReceived);
+
 #undef META_REGISTER_DISPATCHER
 }
 
@@ -149,11 +172,7 @@ FJsonRpcResponse UPixelStreamingMethodHandler::OnUserChanged(const FPixelStreami
         const auto Guid = Ctx.Request.GetGuid();
         if (!IsValid(Caller))
         {
-                FJsonRpcError NewError = FJsonRpcError();
-                NewError.SetCode(405);
-                NewError.SetMessage(TEXT("not existed caller"));
-
-                return FJsonRpcResponse(Guid, FJsonObject{}, NewError);
+                return CreateSimpleJsonResponse(Guid, EJsonRpcErrorCode::InvalidRequest, TEXT("Caller doesn't existed!"));
         }
 
         FPlayerControllerEventMessage NewMessage;
@@ -161,7 +180,7 @@ FJsonRpcResponse UPixelStreamingMethodHandler::OnUserChanged(const FPixelStreami
 
         Caller->GetGameInstance()->GetSubsystem<UGameplayMessageSubsystem>()->BroadcastMessage(GameplayTagsRouter::OnUserChanged, MoveTemp(NewMessage));
 
-        return FJsonRpcResponse(Guid, FJsonObject{});
+        return CreateSimpleJsonResponse(Guid, EJsonRpcErrorCode::None, FString());
 }
 
 FJsonRpcResponse UPixelStreamingMethodHandler::OnBackToOrigin(const FPixelStreamingMethodContext& Ctx)
@@ -171,7 +190,7 @@ FJsonRpcResponse UPixelStreamingMethodHandler::OnBackToOrigin(const FPixelStream
         const auto Guid = Ctx.Request.GetGuid();
         if (!IsValid(Caller))
         {
-                return FJsonRpcResponse(Guid, FJsonObject{});
+                return CreateSimpleJsonResponse(Guid, EJsonRpcErrorCode::InvalidRequest, TEXT("Caller doesn't existed!"));
         }
 
         FPlayerControllerEventMessage NewMessage;
@@ -179,7 +198,7 @@ FJsonRpcResponse UPixelStreamingMethodHandler::OnBackToOrigin(const FPixelStream
 
         Caller->GetGameInstance()->GetSubsystem<UGameplayMessageSubsystem>()->BroadcastMessage(GameplayTagsRouter::OnBackToOrigin, MoveTemp(NewMessage));
 
-        return FJsonRpcResponse(Guid, FJsonObject{});
+        return CreateSimpleJsonResponse(Guid, EJsonRpcErrorCode::None, FString());
 }
 
 FJsonRpcResponse UPixelStreamingMethodHandler::OnGetSearchAreaScale(const FPixelStreamingMethodContext& Ctx)
@@ -191,13 +210,13 @@ FJsonRpcResponse UPixelStreamingMethodHandler::OnGetSearchAreaScale(const FPixel
 
         if (!IsValid(Ctx.Caller))
         {
-                return FJsonRpcResponse(Guid, FJsonRpcError(EJsonRpcErrorCode::InternalError, "Invalid caller."));
+                return CreateSimpleJsonResponse(Guid, EJsonRpcErrorCode::InvalidRequest, TEXT("Caller doesn't existed!"));
         }
 
         float ResultScale;
         if (!Ctx.Request.GetParams().TryGetNumberField(TEXT("scale"), ResultScale))
         {
-                return FJsonRpcResponse(Guid, FJsonRpcError(EJsonRpcErrorCode::InvalidParams, "Invalid `value` parameter."));
+                return CreateSimpleJsonResponse(Guid, EJsonRpcErrorCode::InvalidParams, TEXT("Invalid `scale` parameter!"));
         }
 
         FScaleObjectMessage NewMessage;
@@ -206,7 +225,7 @@ FJsonRpcResponse UPixelStreamingMethodHandler::OnGetSearchAreaScale(const FPixel
 
         Caller->GetGameInstance()->GetSubsystem<UGameplayMessageSubsystem>()->BroadcastMessage(GameplayTagsRouter::OnGetSearchAreaScale, MoveTemp(NewMessage));
 
-        return FJsonRpcResponse(Guid, FJsonObject{});
+        return CreateSimpleJsonResponse(Guid, EJsonRpcErrorCode::None, FString());
 }
 
 FJsonRpcResponse UPixelStreamingMethodHandler::OnChangeActiveStateSearchArea(const FPixelStreamingMethodContext& Ctx)
@@ -216,15 +235,15 @@ FJsonRpcResponse UPixelStreamingMethodHandler::OnChangeActiveStateSearchArea(con
         const auto Guid = Ctx.Request.GetGuid();
         const TObjectPtr<APlayerController> Caller = Ctx.Caller;
 
+        if (!IsValid(Ctx.Caller))
+        {
+                return CreateSimpleJsonResponse(Guid, EJsonRpcErrorCode::InvalidRequest, TEXT("Caller doesn't existed!"));
+        }
+
         bool bEnableArea;
         if (!Ctx.Request.GetParams().TryGetBoolField(TEXT("active"), bEnableArea))
         {
-                return FJsonRpcResponse(Guid, FJsonRpcError(EJsonRpcErrorCode::InvalidParams, "Invalid `value` parameter."));
-        }
-
-        if (!IsValid(Ctx.Caller))
-        {
-                return FJsonRpcResponse(Guid, FJsonRpcError(EJsonRpcErrorCode::InternalError, "Invalid caller."));
+                return CreateSimpleJsonResponse(Guid, EJsonRpcErrorCode::InvalidParams, "Invalid `active` parameter.");
         }
 
         FChangeObjectStateMessage NewMessage;
@@ -233,7 +252,7 @@ FJsonRpcResponse UPixelStreamingMethodHandler::OnChangeActiveStateSearchArea(con
 
         Caller->GetGameInstance()->GetSubsystem<UGameplayMessageSubsystem>()->BroadcastMessage(GameplayTagsRouter::OnChangeActiveStateSearchArea,
                                                                                                MoveTemp(NewMessage));
-        return FJsonRpcResponse(Guid, FJsonObject{});
+        return CreateSimpleJsonResponse(Guid, EJsonRpcErrorCode::None, FString());
 }
 
 FJsonRpcResponse UPixelStreamingMethodHandler::OnScanResponseReceived(const FPixelStreamingMethodContext& Ctx)
@@ -245,7 +264,7 @@ FJsonRpcResponse UPixelStreamingMethodHandler::OnScanResponseReceived(const FPix
 
         if (!IsValid(Ctx.Caller))
         {
-                return FJsonRpcResponse(Guid, FJsonRpcError(EJsonRpcErrorCode::InternalError, "Invalid caller."));
+                return CreateSimpleJsonResponse(Guid, EJsonRpcErrorCode::InternalError, "Invalid caller.");
         }
 
         FPlayerControllerEventMessage NewMessage;
@@ -253,7 +272,7 @@ FJsonRpcResponse UPixelStreamingMethodHandler::OnScanResponseReceived(const FPix
 
         Caller->GetGameInstance()->GetSubsystem<UGameplayMessageSubsystem>()->BroadcastMessage(GameplayTagsRouter::OnScanResponseReceived,
                                                                                                MoveTemp(NewMessage));
-        return FJsonRpcResponse(Guid, FJsonObject{});
+        return CreateSimpleJsonResponse(Guid, EJsonRpcErrorCode::None, FString());
 }
 
 FJsonRpcResponse UPixelStreamingMethodHandler::OnGeoPinsReceived(const FPixelStreamingMethodContext& Ctx)
@@ -265,7 +284,7 @@ FJsonRpcResponse UPixelStreamingMethodHandler::OnGeoPinsReceived(const FPixelStr
 
         if (!IsValid(Ctx.Caller))
         {
-                return FJsonRpcResponse(Guid, FJsonRpcError(EJsonRpcErrorCode::InternalError, "Invalid caller."));
+                return CreateSimpleJsonResponse(Guid, EJsonRpcErrorCode::InvalidRequest, TEXT("Caller doesn't existed!"));
         }
 
         const FJsonObject Params = Ctx.Request.GetParams();
@@ -276,8 +295,7 @@ FJsonRpcResponse UPixelStreamingMethodHandler::OnGeoPinsReceived(const FPixelStr
         const TArray<TSharedPtr<FJsonValue>>* Pins{};
         if (!Params.TryGetArrayField(TEXT("pins"), Pins))
         {
-
-                return FJsonRpcResponse(Guid, FJsonRpcError(EJsonRpcErrorCode::InternalError, "pins is empty"));
+                return CreateSimpleJsonResponse(Guid, EJsonRpcErrorCode::InvalidParams, "Invalid `pins` parameter.");
         }
 
         FGeoPinsInfo NewMessage;
@@ -296,12 +314,14 @@ FJsonRpcResponse UPixelStreamingMethodHandler::OnGeoPinsReceived(const FPixelStr
                 const TArray<TSharedPtr<FJsonValue>>* Coordinates{};
                 if (!Object->TryGetArrayField(TEXT("coordinates"), Coordinates))
                 {
+                        CreateSimpleJsonResponse(Guid, EJsonRpcErrorCode::InvalidParams, "OnGeoPinsReceived: Invalid `coordinates` parameter.");
                         continue;
                 }
 
                 FString PinId;
                 if (!Object->TryGetStringField(TEXT("id"), PinId))
                 {
+                        CreateSimpleJsonResponse(Guid, EJsonRpcErrorCode::InvalidParams, "OnGeoPinsReceived: Invalid `id` parameter.");
                         continue;
                 }
 
@@ -309,17 +329,85 @@ FJsonRpcResponse UPixelStreamingMethodHandler::OnGeoPinsReceived(const FPixelStr
                 NewPin.WorldPositions = CesiumGeoreference->TransformLongitudeLatitudeHeightPositionToUnreal(NewPin.GeoPositions);
                 NewPin.WorldPositions.Z = 500.0;
                 NewPin.Id = PinId;
-                
+
                 NewMessage.PinsInfo.Add(MoveTemp(NewPin));
         }
 
         if (NewMessage.PinsInfo.IsEmpty())
         {
-                return FJsonRpcResponse(Guid, FJsonRpcError(EJsonRpcErrorCode::InternalError, "Nothing to spawn"));
+                return CreateSimpleJsonResponse(Guid, EJsonRpcErrorCode::InvalidRequest, "OnGeoPinsReceived: Nothing to show.");
         }
 
         NewMessage.InstigatingController = Caller;
 
         Caller->GetGameInstance()->GetSubsystem<UGameplayMessageSubsystem>()->BroadcastMessage(GameplayTagsRouter::OnGeoPinsReceived, MoveTemp(NewMessage));
-        return FJsonRpcResponse(Guid, FJsonObject{});
+
+        return CreateSimpleJsonResponse(Guid, EJsonRpcErrorCode::None, FString());
+}
+
+FJsonRpcResponse UPixelStreamingMethodHandler::OnTranslateCameraLocationReceived(const FPixelStreamingMethodContext& Ctx)
+{
+        verify(IsAvailable());
+
+        const auto Guid = Ctx.Request.GetGuid();
+        const TObjectPtr<APlayerController> Caller = Ctx.Caller;
+
+        if (!IsValid(Ctx.Caller))
+        {
+                return CreateSimpleJsonResponse(Guid, EJsonRpcErrorCode::InvalidRequest, TEXT("Caller doesn't existed!"));
+        }
+
+        const FJsonObject Params = Ctx.Request.GetParams();
+
+        const ACesiumGeoreference* const CesiumGeoreference = UGeoAiUtilitiesLibrary::GetCesiumGeoreference(Caller);
+        check(CesiumGeoreference);
+
+        const TArray<TSharedPtr<FJsonValue>>* Coordinates{};
+        if (!Params.TryGetArrayField(TEXT("coordinates"), Coordinates))
+        {
+                return CreateSimpleJsonResponse(Guid, EJsonRpcErrorCode::InvalidParams, "Invalid `coordinates` parameter.");
+        }
+
+        const TArray<TSharedPtr<FJsonValue>>* Rotate{};
+        Params.TryGetArrayField(TEXT("rotate"), Rotate);
+
+        const FVector ResultGeoLocation = FVector((*Coordinates)[1]->AsNumber(), (*Coordinates)[0]->AsNumber(), 0.0);
+        const FVector ResultWorldLocation = CesiumGeoreference->TransformLongitudeLatitudeHeightPositionToUnreal(ResultGeoLocation);
+
+        if (auto* TranslationComponent = Caller->FindComponentByClass<UCameraTranslationComponent>(); IsValid(TranslationComponent))
+        {
+                if (Rotate->IsEmpty())
+                {
+                        TranslationComponent->SetTargetLocation(ResultGeoLocation);
+                }
+                else
+                {
+                        const FRotator ResultingRotation = FRotator((*Rotate)[0]->AsNumber(), (*Rotate)[1]->AsNumber(), 0.0);
+                        TranslationComponent->SetTargetTransform(FTransform(FQuat(ResultingRotation), ResultWorldLocation));
+                }
+        }
+        else
+        {
+                TranslationComponent = StaticCast<UCameraTranslationComponent*>(
+                        Caller->AddComponentByClass(UCameraTranslationComponent::StaticClass(), false, FTransform::Identity, true));
+
+                if (!IsValid(TranslationComponent))
+                {
+                        return CreateSimpleJsonResponse(Guid, EJsonRpcErrorCode::InternalError, TEXT("Translation component can't be create"));
+                }
+
+                if (Rotate->IsEmpty())
+                {
+                        TranslationComponent->SetTargetLocation(ResultGeoLocation);
+                }
+                else
+                {
+                        const FRotator ResultingRotation = FRotator((*Rotate)[0]->AsNumber(), (*Rotate)[1]->AsNumber(), 0.0);
+                        TranslationComponent->SetTargetTransform(FTransform(FQuat(ResultingRotation), ResultWorldLocation));
+                }
+
+                Caller->FinishAddComponent(TranslationComponent, false, FTransform::Identity);
+        }
+
+        return CreateSimpleJsonResponse(Guid, EJsonRpcErrorCode::None, FString());
 }
